@@ -518,17 +518,7 @@ function buildGeneratorPrompt({
 function hasPerspectiveShift(originalText, outputText) {
   const orig = cleanText(originalText).toLowerCase();
   const out = cleanText(outputText).toLowerCase();
-// If the original is aimed at "you", the rewrite should not flip into
-// "I/me" as if the target is replying back.
-const originalTargetsYou =
-  /\byou\b|\byou're\b|\byou are\b|\byour\b/i.test(orig);
 
-const outputSpeaksAsTarget =
-  /^(oh,\s*)?(i'm|i am|i’ve|i have|me|my)\b/i.test(out);
-
-if (originalTargetsYou && outputSpeaksAsTarget) {
-  return true;
-}
   const originalHasFirstPerson = /\b(i|i'm|i’ve|i'd|me|my|mine)\b/.test(orig);
   const outputHasFirstPerson = /\b(i|i'm|i’ve|i'd|me|my|mine)\b/.test(out);
 
@@ -656,15 +646,15 @@ function generationConfigFor({ mode, level }) {
   if (mode === "roaster") {
     return {
       // Give the model a healthy creative floor so it doesn't choke on low levels
-      temperature: Math.min(0.65, 0.45 + (safeLevel * 0.02)), 
+      temperature: Math.min(0.45, 0.25 + (safeLevel * 0.02)), 
       topP: 0.80,
-      // Bump tokens to 175 to guarantee it can complete a long rhetorical sentence
+      // Bump tokens to 150 to guarantee it can complete a long rhetorical sentence
       maxOutputTokens: 175, 
     };
   }
 
   return {
-    temperature: Math.min(0.75, 0.5 + safeLevel * 0.05),
+    temperature: Math.min(0.85, 0.5 + safeLevel * 0.05),
     topP: 0.85,
     maxOutputTokens: 320,
   };
