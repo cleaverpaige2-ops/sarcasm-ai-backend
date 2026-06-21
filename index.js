@@ -5,6 +5,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import { DEV_FLAGS } from "./src/config/devFlags.js";
 import { enforceWeeklyCap } from "./src/limits/enforceWeeklyCap.js";
+import { db } from "./firebase.js";
 
 dotenv.config();
 
@@ -78,7 +79,7 @@ if (!API_KEY) {
 }
 
 const genAI = new GoogleGenerativeAI(API_KEY);
-const db = createInMemoryDb();
+
 const capMiddleware = enforceWeeklyCap({ db });
 
 const MODEL_CANDIDATES = [
