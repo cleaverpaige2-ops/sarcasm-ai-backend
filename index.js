@@ -181,7 +181,9 @@ async function ensureFieldTestStarted(db, deviceId) {
 }
 
 function requestCostForMode(mode) {
-  return mode === "roaster" ? 1 : 3;
+  if (mode === "templates") return 0;
+  if (mode === "roaster") return 1;
+  return 3;
 }
 
 async function getTestCreditStatus(db, deviceId) {
@@ -664,22 +666,21 @@ if (!corrected && looksTooDifferentFromSource(originalText, single)) {
    Generation config + fallbacks
    ========================================================= */
 function generationConfigFor({ mode, level }) {
-  const safeLevel = clampInt(level, 0, 10);
+  const safeLevel = clampInt(level, 1, 5);
 
   if (mode === "roaster") {
     return {
       // Give the model a healthy creative floor so it doesn't choke on low levels
-      temperature: Math.min(0.65, 0.45 + (safeLevel * 0.02)), 
-      topP: 0.80,
-      // Bump tokens to 175 to guarantee it can complete a long rhetorical sentence
-      maxOutputTokens: 175, 
+      temperature: Math.min(0.75, 0.5 + safeLevel * 0.04),
+      topP: 0.85,
+      maxOutputTokens: 175,
     };
   }
 
   return {
-    temperature: Math.min(0.75, 0.5 + safeLevel * 0.05),
+    temperature: Math.min(0.8, 0.5 + safeLevel * 0.05),
     topP: 0.85,
-    maxOutputTokens: 320,
+    maxOutputTokens: mode === "templates" ? 700 : 320,
   };
 }
 
@@ -835,7 +836,13 @@ app.post("/generate", async (req, res) => {
       req.body?.deviceId ||
       "unknown";
 
-    const mode = req.body?.mode === "roaster" ? "roaster" : "generator";
+    const requestedMode = String(req.body?.mode || "generator").toLowerCase();
+const mode =
+  requestedMode === "roaster"
+    ? "roaster"
+    : requestedMode === "templates"
+      ? "templates"
+      : "generator";
     console.log("REQUEST MODE:", req.body?.mode, "->", mode);
     console.log("REQUEST BODY:", req.body);
 
@@ -873,7 +880,8 @@ app.post("/generate", async (req, res) => {
     const text = cleanText(req.body?.text || "");
     const style = cleanText(req.body?.style || "light");
     const safeLevel = clampInt(req.body?.level, 1, 5);
-    const requestedCount = clampInt(req.body?.count, 1, 3);
+    const maxCount = mode === "templates" ? 10 : 3;
+    const requestedCount = clampInt(req.body?.count, 1, maxCount);
     const safeCount = mode === "roaster" ? 1 : requestedCount;
     const recipientAgeGroup = cleanText(req.body?.recipientAgeGroup || "neutral");
     const nonce = req.body?.nonce;
