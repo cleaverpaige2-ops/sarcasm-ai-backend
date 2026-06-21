@@ -378,7 +378,7 @@ function splitOptions(raw, expectedCount) {
 
 function sarcasmToneFrom(style, level) {
   const safeStyle = String(style || "").toLowerCase();
-  const safeLevel = clampInt(level, 0, 10);
+  const safeLevel = clampInt(level, 1, 5);
 
   if (safeStyle.includes("dry")) return "dry, deadpan sarcasm";
   if (safeStyle.includes("playful")) return "playful sarcasm";
@@ -414,13 +414,25 @@ function styleInstruction(style) {
 }
 
 function levelInstruction(level) {
-  const n = clampInt(level, 0, 10);
+  const n = clampInt(level, 1, 5);
 
-  if (n <= 2) return "Use very subtle sarcasm. Keep it polite, soft, and easily deniable.";
-  if (n <= 4) return "Use light sarcasm. Noticeable but still friendly and socially acceptable.";
-  if (n <= 6) return "Use clear sarcasm. Make it obvious, slightly sharp, and confident, but still appropriate for normal conversation.";
-  if (n <= 8) return "Use strong sarcasm. Be cutting, direct, and less polite.";
-  return "Use very harsh sarcasm. Be blunt, biting, and unapologetically sharp.";
+  if (n === 1) {
+    return "Heat 1/5: Just a poke. Use very gentle sarcasm. Keep it friendly, subtle, teasing, and safe for normal conversation.";
+  }
+
+  if (n === 2) {
+    return "Heat 2/5: Mildly annoyed. Use light sarcasm that is noticeable but still playful, friendly, and socially acceptable.";
+  }
+
+  if (n === 3) {
+    return "Heat 3/5: Getting heated. Use clear sarcasm. Make it obvious, witty, and slightly sharp without becoming cruel.";
+  }
+
+  if (n === 4) {
+    return "Heat 4/5: I'm getting pissed. Use strong sarcasm. Be direct, annoyed, and cutting, but avoid threats or graphic wording.";
+  }
+
+  return "Heat 5/5: Maximum sarcasm. Be blunt, savage, and unapologetically sharp, but keep it as a text-message comeback and avoid real-world threats.";
 }
 
 /* =========================================================
@@ -450,7 +462,7 @@ function buildRoasterPrompt({ text, level, style, nonce }) {
     `2. ${levelInstruction(level)}`,
     "3. Maintain the exact structural focus. Do NOT talk about 'a person asking this', do NOT comment on the difficulty, and do NOT use phrases like 'look at this genius'.",
     "4. If the INPUT is a question, the OUTPUT must be a direct sarcastic variant of that exact question.",
-    `Configuration: Style=${style}, Intensity=${level}/10, Seed=${String(nonce || Date.now())}`,
+    `Configuration: Style=${style}, Intensity=${level}/5, Seed=${String(nonce || Date.now())}`,
     `Source: <source_string>${safeText}</source_string>`,
     "Target:",
   ].join("\n");
@@ -860,7 +872,7 @@ app.post("/generate", async (req, res) => {
 
     const text = cleanText(req.body?.text || "");
     const style = cleanText(req.body?.style || "light");
-    const safeLevel = clampInt(req.body?.level, 0, 10);
+    const safeLevel = clampInt(req.body?.level, 1, 5);
     const requestedCount = clampInt(req.body?.count, 1, 3);
     const safeCount = mode === "roaster" ? 1 : requestedCount;
     const recipientAgeGroup = cleanText(req.body?.recipientAgeGroup || "neutral");
