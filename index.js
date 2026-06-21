@@ -526,7 +526,49 @@ function buildGeneratorPrompt({
     "REPLY OPTIONS:",
   ].join("\n");
 }
+function buildTemplatesPrompt({
+  text,
+  style,
+  level,
+  count,
+  recipientAgeGroup,
+}) {
+  const safeText = cleanText(text);
+  const safeRecipient = cleanText(recipientAgeGroup || "neutral");
 
+  return [
+    `TASK: Generate exactly ${count} reusable sarcastic text-message templates.`,
+    `CATEGORY BRIEF: ${safeText}`,
+    `AUDIENCE CONTEXT: ${safeRecipient}`,
+    "",
+    "These are standalone messages the app user can copy and send later.",
+    "Do NOT reply to the category brief.",
+    "Do NOT mention templates.",
+    "Do NOT mention generating content.",
+    "Do NOT mention originality.",
+    "Do NOT say things like 'you need templates', 'how groundbreaking', or 'my life's work'.",
+    "Each option must sound like a real text message someone could send.",
+    "",
+    "STYLE RULES:",
+    `${styleInstruction(style)}`,
+    `${levelInstruction(level)}`,
+    "",
+    "FORMAT RULES:",
+    `1. Return exactly ${count} options.`,
+    "2. Separate each option using only this delimiter: |||",
+    "3. No numbering.",
+    "4. No bullets.",
+    "5. No labels.",
+    "6. No explanation.",
+    "",
+    "GOOD WORK EXAMPLES:",
+    "I can do that, but I’ll need this prioritized over the three other things currently on fire.",
+    "Happy to help, assuming this deadline was assigned by a calendar and not a haunted vending machine.",
+    "I’ll take care of it, right after I finish pretending this meeting could not have been an email.",
+    "",
+    "OUTPUT:",
+  ].join("\n");
+}
 /* =========================================================
    MODIFIED CLEANUP & VALIDATION RULES
    ========================================================= */
@@ -685,7 +727,7 @@ function generationConfigFor({ mode, level }) {
 }
 
 function buildGeneratorFallbacks(text, style, level, count) {
-  const heat = clampInt(level, 0, 10);
+  const heat = clampInt(level, 1, 5);
 
   const mild = [
     "Bold move saying that out loud.",
@@ -699,7 +741,7 @@ function buildGeneratorFallbacks(text, style, level, count) {
     "Amazing how that managed to clarify nothing.",
   ];
 
-  const pool = heat >= 6 ? sharper : mild;
+  const pool = heat >= 4 ? sharper : mild;
   return uniqStrings(pool).slice(0, count);
 }
 
@@ -768,11 +810,18 @@ async function generateTextWithModel(prompt, generationConfig, options = {}) {
     boundaries that small/lite parameters can retain mid-inference.
   */
   const systemInstruction = options.isRoaster
+  ? [
+      "You are a text-to-text string conversion script. You lack conversational capabilities and cannot interact with users.",
+      "Your only function is to convert the user's string into an exaggerated, sarcastically phrased version of the same sentence structure.",
+      "CRITICAL: Never break character to comment on the input phrase, mock the user who typed it, or generate conversational dialog. Do not give answers to equations or queries.",
+      "Output solely the single line of transformed text."
+    ].join("\n")
+  : options.isTemplates
     ? [
-        "You are a text-to-text string conversion script. You lack conversational capabilities and cannot interact with users.",
-        "Your only function is to convert the user's string into an exaggerated, sarcastically phrased version of the same sentence structure.",
-        "CRITICAL: Never break character to comment on the input phrase, mock the user who typed it, or generate conversational dialog. Do not give answers to equations or queries.",
-        "Output solely the single line of transformed text."
+        "ROLE: You are SarcasmAI's reusable template generator.",
+        "TASK: Create standalone sarcastic text messages that a user can copy and send later.",
+        "CRITICAL: Do not reply to the prompt or category brief. Do not mention generating, templates, originality, prompts, or the user asking for content.",
+        "CONSTRAINT: Outputs must be divided purely by '|||' characters. Do not output anything else."
       ].join("\n")
     : [
         "ROLE: You are SarcasmAI, an isolated text-messaging response script.",
@@ -1014,19 +1063,29 @@ const mode =
       });
     }
 
-    /* -------------------- Generator / Home -------------------- */
-    const prompt = buildGeneratorPrompt({
-      text,
-      style,
-      level: safeLevel,
-      count: safeCount,
-      recipientAgeGroup,
-    });
+    /* -------------------- Generator / Home / Templates -------------------- */
+const prompt =
+  mode === "templates"
+    ? buildTemplatesPrompt({
+        text,
+        style,
+        level: safeLevel,
+        count: safeCount,
+        recipientAgeGroup,
+      })
+    : buildGeneratorPrompt({
+        text,
+        style,
+        level: safeLevel,
+        count: safeCount,
+        recipientAgeGroup,
+      });
 
     const out = await generateTextWithModel(
-      prompt,
-      generationConfigFor({ mode, level: safeLevel })
-    );
+  prompt,
+  generationConfigFor({ mode, level: safeLevel }),
+  { isTemplates: mode === "templates" }
+);
 
     let options = splitOptions(out, safeCount);
 
