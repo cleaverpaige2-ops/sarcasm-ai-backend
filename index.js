@@ -182,6 +182,7 @@ async function ensureFieldTestStarted(db, deviceId) {
 
 function requestCostForMode(mode) {
   if (mode === "templates") return 0;
+  if (mode === "emoji") return 1;
   if (mode === "roaster") return 1;
   return 3;
 }
@@ -566,12 +567,77 @@ function buildTemplatesPrompt({
     "6. No explanation.",
     "",
     "GOOD EXAMPLES:",
-"I can do that, but I’ll need this prioritized over the three other things currently on fire.",
-"Happy to help, assuming this deadline was assigned by a calendar and not a haunted vending machine.",
-"I’ll take care of it, right after I finish pretending this meeting could not have been an email.",
-"Per my last email, the answer is still the same, but I appreciate the scenic route back to it.",
-"That sounds like a quick change in the same way moving a house is technically just rearranging furniture.",
+    "I can do that, but I’ll need this prioritized over the three other things currently on fire.",
+    "Happy to help, assuming this deadline was assigned by a calendar and not a haunted vending machine.",
+    "I’ll take care of it, right after I finish pretending this meeting could not have been an email.",
+    "Per my last email, the answer is still the same, but I appreciate the scenic route back to it.",
+    "That sounds like a quick change in the same way moving a house is technically just rearranging furniture.",
     "OUTPUT:",
+  ].join("\n");
+}
+function buildEmojiPrompt({
+  text,
+  style,
+  level,
+  recipientAgeGroup,
+  nonce,
+}) {
+  const safeText = cleanText(text);
+  const safeRecipient = cleanText(recipientAgeGroup || "neutral");
+
+  return [
+    "TASK: Create one sarcastic emoji reaction pack based directly on the user's message, mood, or situation.",
+    "",
+    "USER INPUT:",
+    "===INPUT-START===",
+    safeText,
+    "===INPUT-END===",
+    "",
+    `AUDIENCE CONTEXT: ${safeRecipient}`,
+    `STYLE: ${styleInstruction(style)}`,
+    `HEAT: ${levelInstruction(level)}`,
+    `VARIATION SEED: ${String(nonce || Date.now())}`,
+    "",
+    "CRITICAL RULES:",
+    "1. The output must clearly connect to the USER INPUT.",
+    "2. Do not use generic emoji reactions unless they fit the input.",
+    "3. Use fresh variation each time. Do not repeat the same pack for the same broad topic.",
+    "4. Keep it copy-ready for texting.",
+    "5. Be sarcastic, funny, and expressive.",
+    "6. Do not explain what you are doing.",
+    "7. Do not mention prompts, generation, AI, or templates.",
+    "8. Avoid threats, slurs, graphic sexual content, or hateful content.",
+    "",
+    "OUTPUT FORMAT:",
+    "Line 1: three to five emojis only",
+    "Line 2: three to five emojis only",
+    "Line 3: three to five emojis only",
+    "Line 4: blank line",
+    "Line 5: Reaction: short sarcastic caption connected to the input",
+    "Line 6: Soft chaos: short playful sarcastic caption connected to the input",
+    "Line 7: Send-and-run: short bolder sarcastic caption connected to the input",
+    "",
+    "EXAMPLES:",
+    "",
+    "Input: I need to poop",
+    "🚽🏃‍♀️💨",
+    "🫡🚪💩",
+    "📢🚨🚽",
+    "",
+    "Reaction: Nature has entered the chat.",
+    "Soft chaos: I have been summoned by the porcelain throne.",
+    "Send-and-run: This is not a drill. It is a bowel event.",
+    "",
+    "Input: This meeting could have been an email",
+    "📅🙃🔥",
+    "📧😐☕",
+    "🫠💼🚩",
+    "",
+    "Reaction: Another calendar hostage situation, love that.",
+    "Soft chaos: My inbox could have handled this with less emotional damage.",
+    "Send-and-run: This meeting has the energy of an email wearing a fake mustache.",
+    "",
+    "NOW CREATE THE OUTPUT FOR THE USER INPUT ONLY:",
   ].join("\n");
 }
 /* =========================================================
@@ -725,10 +791,10 @@ function generationConfigFor({ mode, level }) {
   }
 
   return {
-    temperature: Math.min(0.8, 0.5 + safeLevel * 0.05),
-    topP: 0.85,
-    maxOutputTokens: mode === "templates" ? 700 : 320,
-  };
+  temperature: mode === "emoji" ? 0.9 : Math.min(0.8, 0.5 + safeLevel * 0.05),
+  topP: mode === "emoji" ? 0.95 : 0.85,
+  maxOutputTokens: mode === "templates" ? 700 : mode === "emoji" ? 260 : 320,
+};
 }
 
 function buildGeneratorFallbacks(text, style, level, count) {
@@ -749,7 +815,79 @@ function buildGeneratorFallbacks(text, style, level, count) {
   const pool = heat >= 4 ? sharper : mild;
   return uniqStrings(pool).slice(0, count);
 }
+function cleanEmojiOutput(raw, originalText) {
+  let text = String(raw ?? "").trim();
 
+  text = text
+    .replace(/```text|```json|```/gi, "")
+    .replace(/^\s*OUTPUT:\s*/i, "")
+    .trim();
+
+  if (!text) {
+    return buildEmojiFallback(originalText);
+  }
+
+  const lines = text
+    .split(/\n/)
+    .map((line) => line.trim())
+    .filter((line, index, arr) => {
+      if (line) return true;
+      const before = arr[index - 1]?.trim();
+      const after = arr[index + 1]?.trim();
+      return !!before && !!after;
+    });
+
+  const joined = lines.join("\n").trim();
+
+  if (
+    !joined ||
+    !/Reaction:/i.test(joined) ||
+    !/Soft chaos:/i.test(joined) ||
+    !/Send-and-run:/i.test(joined)
+  ) {
+    return buildEmojiFallback(originalText);
+  }
+
+  return joined;
+}
+
+function buildEmojiFallback(originalText) {
+  const t = cleanText(originalText).toLowerCase();
+
+  if (/\bpoop|bathroom|toilet|pee|piss|stomach|tummy\b/i.test(t)) {
+    return [
+      "🚽🏃‍♀️💨",
+      "🫡🚪💩",
+      "📢🚨🚽",
+      "",
+      "Reaction: Nature has entered the chat.",
+      "Soft chaos: I have been summoned by the porcelain throne.",
+      "Send-and-run: This is not a drill. It is a bowel event.",
+    ].join("\n");
+  }
+
+  if (/\bmeeting|email|deadline|work|boss|calendar\b/i.test(t)) {
+    return [
+      "📅🙃🔥",
+      "📧😐☕",
+      "🫠💼🚩",
+      "",
+      "Reaction: Another calendar hostage situation, love that.",
+      "Soft chaos: My inbox could have handled this with less emotional damage.",
+      "Send-and-run: This meeting has the energy of an email wearing a fake mustache.",
+    ].join("\n");
+  }
+
+  return [
+    "🙃😒🔥",
+    "😑🫠🚩",
+    "🙄🧨😌",
+    "",
+    "Reaction: Well, that was certainly a choice.",
+    "Soft chaos: I support this emotionally, but only from a safe distance.",
+    "Send-and-run: Dropping this here and fleeing the scene immediately.",
+  ].join("\n");
+}
 /* =========================================================
    MODIFIED MODEL SYSTEM INSTRUCTIONS
    ========================================================= */
@@ -822,11 +960,18 @@ async function generateTextWithModel(prompt, generationConfig, options = {}) {
       "Output solely the single line of transformed text."
     ].join("\n")
   : options.isTemplates
+  ? [
+      "ROLE: You are SarcasmAI's reusable template generator.",
+      "TASK: Create standalone sarcastic text messages that a user can copy and send later.",
+      "CRITICAL: Do not reply to the prompt or category brief. Do not mention generating, templates, originality, prompts, or the user asking for content.",
+      "CONSTRAINT: Outputs must be divided purely by '|||' characters. Do not output anything else."
+    ].join("\n")
+  : options.isEmoji
     ? [
-        "ROLE: You are SarcasmAI's reusable template generator.",
-        "TASK: Create standalone sarcastic text messages that a user can copy and send later.",
-        "CRITICAL: Do not reply to the prompt or category brief. Do not mention generating, templates, originality, prompts, or the user asking for content.",
-        "CONSTRAINT: Outputs must be divided purely by '|||' characters. Do not output anything else."
+        "ROLE: You are SarcasmAI's emoji reaction generator.",
+        "TASK: Create a sarcastic emoji reaction pack that directly matches the user's input.",
+        "CRITICAL: The result must feel specific to the input, not generic.",
+        "CONSTRAINT: Output only the requested emoji/caption block. Do not use delimiters, bullets, numbering, explanations, or intro text."
       ].join("\n")
     : [
         "ROLE: You are SarcasmAI, an isolated text-messaging response script.",
@@ -896,7 +1041,9 @@ const mode =
     ? "roaster"
     : requestedMode === "templates"
       ? "templates"
-      : "generator";
+      : requestedMode === "emoji"
+        ? "emoji"
+        : "generator";
     console.log("REQUEST MODE:", req.body?.mode, "->", mode);
     console.log("REQUEST BODY:", req.body);
 
@@ -934,9 +1081,9 @@ const mode =
     const text = cleanText(req.body?.text || "");
     const style = cleanText(req.body?.style || "light");
     const safeLevel = clampInt(req.body?.level, 1, 5);
-    const maxCount = mode === "templates" ? 10 : 3;
+    const maxCount = mode === "templates" ? 10 : mode === "emoji" ? 1 : 3;
     const requestedCount = clampInt(req.body?.count, 1, maxCount);
-    const safeCount = mode === "roaster" ? 1 : requestedCount;
+    const safeCount = mode === "roaster" || mode === "emoji" ? 1 : requestedCount;
     const recipientAgeGroup = cleanText(req.body?.recipientAgeGroup || "neutral");
     const nonce = req.body?.nonce;
 
@@ -1078,28 +1225,42 @@ const prompt =
         count: safeCount,
         recipientAgeGroup,
       })
-    : buildGeneratorPrompt({
-        text,
-        style,
-        level: safeLevel,
-        count: safeCount,
-        recipientAgeGroup,
-      });
+    : mode === "emoji"
+      ? buildEmojiPrompt({
+          text,
+          style,
+          level: safeLevel,
+          recipientAgeGroup,
+          nonce,
+        })
+      : buildGeneratorPrompt({
+          text,
+          style,
+          level: safeLevel,
+          count: safeCount,
+          recipientAgeGroup,
+        });
 
     const out = await generateTextWithModel(
   prompt,
   generationConfigFor({ mode, level: safeLevel }),
-  { isTemplates: mode === "templates" }
+  { 
+    isTemplates: mode === "templates",
+    isEmoji: mode === "emoji",
+  }
 );
 
-    let options = splitOptions(out, safeCount);
+   let options =
+  mode === "emoji"
+    ? [cleanEmojiOutput(out, text)]
+    : splitOptions(out, safeCount);
 
-    if (options.length < safeCount) {
-      options = uniqStrings([
-        ...options,
-        ...buildGeneratorFallbacks(text, style, safeLevel, safeCount),
-      ]).slice(0, safeCount);
-    }
+if (mode !== "emoji" && options.length < safeCount) {
+  options = uniqStrings([
+    ...options,
+    ...buildGeneratorFallbacks(text, style, safeLevel, safeCount),
+  ]).slice(0, safeCount);
+}
 
     const creditResult = await consumeTestCredits(db, deviceId, requestCost);
     if (!creditResult.ok) {
