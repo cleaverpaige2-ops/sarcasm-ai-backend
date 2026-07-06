@@ -77,7 +77,7 @@ const GOOGLE_IMAGE_MODEL = String(
   process.env.GOOGLE_IMAGE_MODEL || "gemini-3.1-flash-image"
 ).trim();
 
-const EMOJI_IMAGE_CREDIT_COST = Number(process.env.EMOJI_IMAGE_CREDIT_COST || 5);
+const EMOJI_IMAGE_CREDIT_COST = Number(process.env.EMOJI_IMAGE_CREDIT_COST || 1);
 
 if (!API_KEY) {
   console.error("Missing GOOGLE_AI_API_KEY in .env");
