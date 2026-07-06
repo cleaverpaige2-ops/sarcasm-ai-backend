@@ -73,6 +73,12 @@ const PORT = Number(process.env.PORT || 3000);
 const API_KEY = String(process.env.GOOGLE_AI_API_KEY || "").trim();
 const ENV_MODEL = String(process.env.MODEL_NAME || "").trim();
 
+const GOOGLE_IMAGE_MODEL = String(
+  process.env.GOOGLE_IMAGE_MODEL || "gemini-3.1-flash-image"
+).trim();
+
+const EMOJI_IMAGE_CREDIT_COST = Number(process.env.EMOJI_IMAGE_CREDIT_COST || 5);
+
 if (!API_KEY) {
   console.error("Missing GOOGLE_AI_API_KEY in .env");
   process.exit(1);
@@ -796,24 +802,166 @@ function generationConfigFor({ mode, level }) {
   maxOutputTokens: mode === "templates" ? 700 : mode === "emoji" ? 260 : 320,
 };
 }
+function buildEmojiImagePrompt(userPrompt) {
+  const safePrompt = cleanText(userPrompt);
 
-function buildGeneratorFallbacks(text, style, level, count) {
-  const heat = clampInt(level, 1, 5);
+  return [
+    "Create a single custom emoji sticker image.",
+    "",
+    `User description: ${safePrompt}`,
+    "",
+    "STYLE:",
+    "- sticker-style illustration",
+    "- bold clean cartoon outlines",
+    "- expressive face and gesture",
+    "- centered composition",
+    "- square image",
+    "- simple clean background",
+    "- high contrast",
+    "- readable at small phone-screen size",
+    "- looks like a custom reaction sticker or emoji",
+    "",
+    "IMPORTANT:",
+    "- Follow the user description closely.",
+    "- If the user asks for a smiley face, use a round yellow emoji-style face.",
+    "- If the user asks for a gesture, make the gesture visually clear.",
+    "- Do not add text, captions, watermarks, logos, or UI elements.",
+    "- Do not make it realistic or photographic.",
+    "- Do not include real people.",
+    "- Keep it playful and cartoonish.",
+  ].join("\n");
+}
 
-  const mild = [
-    "Bold move saying that out loud.",
-    "That certainly explains a few things.",
-    "Well, that was unexpectedly revealing.",
-  ];
+async function generateEmojiImageBase64(userPrompt) {
+  if (!API_KEY) {
+    const err = new Error(
+      "Missing GOOGLE_AI_API_KEY. Add it to the backend environment before using image generation."
+    );
+    err.code = "MISSING_GOOGLE_AI_API_KEY";
+    throw err;
+  }
 
-  const sharper = [
-    "Thanks, that somehow made everything dumber.",
-    "Impressive, in a deeply avoidable way.",
-    "Amazing how that managed to clarify nothing.",
-  ];
+  const imagePrompt = buildEmojiImagePrompt(userPrompt);
 
-  const pool = heat >= 4 ? sharper : mild;
-  return uniqStrings(pool).slice(0, count);
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+    method: "POST",
+    headers: {
+  "x-goog-api-key": API_KEY,
+  "Content-Type": "application/json",
+  "Api-Revision": "2026-05-20",
+},
+    body: JSON.stringify({
+  model: GOOGLE_IMAGE_MODEL,
+  input: imagePrompt,
+  response_format: {
+    type: "image",
+    aspect_ratio: "1:1",
+    image_size: "1K",
+  },
+}),
+  });
+
+  const body = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message =
+      body?.error?.message ||
+      body?.message ||
+      `Google image generation failed with HTTP ${response.status}`;
+
+    const err = new Error(message);
+    err.status = response.status;
+    err.body = body;
+    throw err;
+  }
+
+    function findImageData(value) {
+    if (!value) return "";
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = findImageData(item);
+        if (found) return found;
+      }
+      return "";
+    }
+
+    if (typeof value === "object") {
+      if (
+        value.type === "image" &&
+        typeof value.data === "string" &&
+        value.data.length > 100
+      ) {
+        return value.data;
+      }
+
+      if (
+        typeof value.data === "string" &&
+        typeof value.mime_type === "string" &&
+        value.mime_type.startsWith("image/") &&
+        value.data.length > 100
+      ) {
+        return value.data;
+      }
+
+      if (
+        typeof value.data === "string" &&
+        typeof value.mimeType === "string" &&
+        value.mimeType.startsWith("image/") &&
+        value.data.length > 100
+      ) {
+        return value.data;
+      }
+
+      if (typeof value.bytesBase64Encoded === "string") {
+        return value.bytesBase64Encoded;
+      }
+
+      if (typeof value.imageBytes === "string") {
+        return value.imageBytes;
+      }
+
+      if (value.inlineData?.data) {
+        return value.inlineData.data;
+      }
+
+      if (value.inline_data?.data) {
+        return value.inline_data.data;
+      }
+
+      for (const key of Object.keys(value)) {
+        const found = findImageData(value[key]);
+        if (found) return found;
+      }
+    }
+
+    return "";
+  }
+
+  const imageBase64 =
+    body?.output_image?.data ||
+    body?.outputImage?.data ||
+    findImageData(body?.steps) ||
+    findImageData(body);
+
+  if (!imageBase64) {
+    console.log("GOOGLE IMAGE RESPONSE SUMMARY:", {
+      status: body?.status,
+      model: body?.model,
+      stepCount: Array.isArray(body?.steps) ? body.steps.length : 0,
+      usage: body?.usage,
+    });
+
+    const err = new Error("Google image generation returned no image data.");
+    err.body = body;
+    throw err;
+  }
+
+  return {
+    imageBase64,
+    imageUrl: "",
+    prompt: imagePrompt,
+  };
 }
 function cleanEmojiOutput(raw, originalText) {
   let text = String(raw ?? "").trim();
@@ -1013,7 +1161,124 @@ async function generateTextWithModel(prompt, generationConfig, options = {}) {
 /* =========================================================
    Routes
    ========================================================= */
-app.get("/", (req, res) => {
+app.post("/generate-emoji-image", async (req, res) => {
+  try {
+    const deviceId =
+      req.headers["x-device-id"] ||
+      req.body?.deviceId ||
+      "unknown";
+
+    const prompt = cleanText(req.body?.prompt || req.body?.text || "");
+
+    if (!prompt) {
+      return res.status(400).json({
+        ok: false,
+        error: "MISSING_PROMPT",
+        message: "Missing emoji image prompt.",
+      });
+    }
+
+    const fieldTestStatus = await getFieldTestStatus(db, deviceId);
+    if (fieldTestStatus.started && fieldTestStatus.expired) {
+      return res.status(403).json({
+        ok: false,
+        error: "FIELD_TEST_EXPIRED",
+        message: "This field test build has expired.",
+        fieldTest: {
+          startedAt: fieldTestStatus.startedAt,
+          expiresAt: fieldTestStatus.expiresAt,
+          daysRemaining: 0,
+        },
+      });
+    }
+
+    const testCredits = await getTestCreditStatus(db, deviceId);
+    if (testCredits.remaining < EMOJI_IMAGE_CREDIT_COST) {
+      return res.status(403).json({
+        ok: false,
+        error: "TEST_CREDITS_EXHAUSTED",
+        message: "You’ve reached the limit for this test version.",
+        testCredits: {
+          used: testCredits.used,
+          cap: testCredits.cap,
+          remaining: testCredits.remaining,
+          costPerRequest: EMOJI_IMAGE_CREDIT_COST,
+        },
+      });
+    }
+
+    const generated = await generateEmojiImageBase64(prompt);
+
+    const creditResult = await consumeTestCredits(
+      db,
+      deviceId,
+      EMOJI_IMAGE_CREDIT_COST
+    );
+
+    if (!creditResult.ok) {
+      return res.status(403).json({
+        ok: false,
+        error: "TEST_CREDITS_EXHAUSTED",
+        message: "You’ve reached the limit for this test version.",
+        testCredits: {
+          used: creditResult.used,
+          cap: creditResult.cap,
+          remaining: creditResult.remaining,
+          costPerRequest: EMOJI_IMAGE_CREDIT_COST,
+        },
+      });
+    }
+
+    const fieldTestResult = await ensureFieldTestStarted(db, deviceId);
+    if (fieldTestResult.expired) {
+      return res.status(403).json({
+        ok: false,
+        error: "FIELD_TEST_EXPIRED",
+        message: "This field test build has expired.",
+        fieldTest: {
+          startedAt: fieldTestResult.startedAt,
+          expiresAt: fieldTestResult.expiresAt,
+          daysRemaining: 0,
+        },
+      });
+    }
+
+    return res.json({
+      ok: true,
+      deviceId,
+      imageBase64: generated.imageBase64,
+      imageUrl: generated.imageUrl,
+      mimeType: "image/jpeg",
+      testCredits: {
+        used: creditResult.used,
+        cap: creditResult.cap,
+        remaining: creditResult.remaining,
+        costPerRequest: EMOJI_IMAGE_CREDIT_COST,
+      },
+      fieldTest: {
+        startedAt: fieldTestResult.startedAt,
+        expiresAt: fieldTestResult.expiresAt,
+        daysRemaining: fieldTestResult.daysRemaining,
+      },
+      debug: {
+  usingImageModel: GOOGLE_IMAGE_MODEL,
+},
+    });
+  } catch (err) {
+  console.error("Emoji image generation error:", err?.message || err);
+
+    if (err?.body) {
+    console.log("GOOGLE IMAGE ERROR SUMMARY:", {
+      status: err.body?.status,
+      model: err.body?.model,
+      stepCount: Array.isArray(err.body?.steps) ? err.body.steps.length : 0,
+      usage: err.body?.usage,
+    });
+  }
+  }
+});
+
+   app.get("/", (req, res) => {
   res.json({
     ok: true,
     message: "SarcasmAI backend running",
