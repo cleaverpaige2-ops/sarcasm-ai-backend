@@ -78,6 +78,70 @@ const GOOGLE_IMAGE_MODEL = String(
 ).trim();
 
 const EMOJI_IMAGE_CREDIT_COST = Number(process.env.EMOJI_IMAGE_CREDIT_COST || 1);
+function validateEmojiPromptSafety(prompt = "") {
+  const text = String(prompt || "").toLowerCase();
+
+  const blockedPatterns = [
+    // Sexual / nudity / genital content
+    /\bpenis\b/,
+    /\bdick\b/,
+    /\bcock\b/,
+    /\bvagina\b/,
+    /\bpussy\b/,
+    /\bboobs?\b/,
+    /\btits?\b/,
+    /\bnude\b/,
+    /\bnaked\b/,
+    /\bporn\b/,
+    /\bporno\b/,
+    /\bsexual\b/,
+    /\bsex\b/,
+    /\berotic\b/,
+    /\bfetish\b/,
+    /\bgenitals?\b/,
+    /\bexplicit\b/,
+    /\bnsfw\b/,
+    /\bonlyfans\b/,
+
+    // Minors / child-risk
+    /\bminor\b/,
+    /\bchild\b.*\bnude\b/,
+    /\bchild\b.*\bsexy\b/,
+    /\bkid\b.*\bnude\b/,
+    /\bkid\b.*\bsexy\b/,
+
+    // Graphic violence
+    /\bgore\b/,
+    /\bbloody\b/,
+    /\bdecapitat/,
+    /\bdismember/,
+    /\bgraphic violence\b/,
+
+    // Hate / extremist
+    /\bnazi\b/,
+    /\bswastika\b/,
+    /\bkkk\b/,
+    /\bhate symbol\b/,
+
+    // Self-harm
+    /\bsuicide\b/,
+    /\bself[- ]?harm\b/,
+    /\bcutting\b/,
+  ];
+
+  const blocked = blockedPatterns.some(pattern => pattern.test(text));
+
+  if (blocked) {
+    return {
+      ok: false,
+      error: "UNSAFE_EMOJI_PROMPT",
+      message:
+        "That sticker request is not allowed. Please describe a safe, non-sexual cartoon reaction sticker.",
+    };
+  }
+
+  return { ok: true };
+}
 
 if (!API_KEY) {
   console.error("Missing GOOGLE_AI_API_KEY in .env");
@@ -806,27 +870,24 @@ function buildEmojiImagePrompt(userPrompt) {
   const safePrompt = cleanText(userPrompt);
 
   return [
-    "Create a single custom emoji sticker image.",
+    "Create a safe, non-sexual, non-explicit, non-violent cartoon emoji-style sticker.",
     "",
-    `User description: ${safePrompt}`,
+    "The sticker should be a fun reaction-style cartoon image with a clean sticker look.",
+    "Use a playful cartoon style, bold readable shapes, and a simple background.",
     "",
-    "STYLE:",
-    "- sticker-style illustration",
-    "- bold clean cartoon outlines",
-    "- expressive face and gesture",
-    "- centered composition",
-    "- square image",
-    "- simple clean background",
-    "- high contrast",
-    "- readable at small phone-screen size",
-    "- looks like a custom reaction sticker or emoji",
+    "Safety rules:",
+    "- Do not create nudity, genitals, sexual content, fetish content, or adult content.",
+    "- Do not create graphic violence, gore, self-harm, hate symbols, extremist symbols, or harassment toward protected groups.",
+    "- Do not create images of real people, celebrities, private individuals, minors in unsafe contexts, or copyrighted characters/logos.",
+    "- If the user request asks for prohibited content, do not create an image.",
     "",
-    "IMPORTANT:",
-    "- Follow the user description closely.",
-    "- If the user asks for a smiley face, use a round yellow emoji-style face.",
-    "- If the user asks for a gesture, make the gesture visually clear.",
-    "- Do not add text, captions, watermarks, logos, or UI elements.",
-    "- Do not make it realistic or photographic.",
+    "User sticker idea:",
+    String(userPrompt || "").trim(),
+    "",
+    "Output requirements:",
+    "- Square 1:1 image.",
+    "- Cartoon emoji sticker style.",
+    "- Safe for a general app audience.",
     "- Do not include real people.",
     "- Keep it playful and cartoonish.",
   ].join("\n");
@@ -1177,6 +1238,15 @@ app.post("/generate-emoji-image", async (req, res) => {
         message: "Missing emoji image prompt.",
       });
     }
+    const safetyCheck = validateEmojiPromptSafety(prompt);
+
+if (!safetyCheck.ok) {
+  return res.status(400).json({
+    ok: false,
+    error: safetyCheck.error,
+    message: safetyCheck.message,
+  });
+}
 
     const fieldTestStatus = await getFieldTestStatus(db, deviceId);
     if (fieldTestStatus.started && fieldTestStatus.expired) {
