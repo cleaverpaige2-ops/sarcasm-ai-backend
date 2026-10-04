@@ -165,89 +165,38 @@ const MODEL_CANDIDATES = [
 let cachedModel = null;
 let cachedModelName = null;
 
-const TEST_CREDITS_CAP = Number(process.env.TEST_CREDITS_CAP || 100);
-const FIELD_TEST_DURATION_DAYS = Number(process.env.FIELD_TEST_DURATION_DAYS || 14);
+const FREE_STARTER_CREDITS = Number(process.env.FREE_STARTER_CREDITS || 15);
 
 /* =========================================================
-   Field test + credits
+   Production starter credits
    ========================================================= */
-function addDaysIso(startIso, days) {
-  const d = new Date(startIso);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString();
-}
 
-async function getFieldTestStatus(db, deviceId) {
-  const snap = await db.collection("fieldTest").doc(deviceId).get();
-  const data = snap.exists ? snap.data() : {};
-
-  const startedAt = data?.startedAt || null;
-  const expiresAt = data?.expiresAt || null;
-
-  if (!startedAt || !expiresAt) {
-    return {
-      started: false,
-      startedAt: null,
-      expiresAt: null,
-      expired: false,
-      daysRemaining: FIELD_TEST_DURATION_DAYS,
-    };
-  }
-
-  const now = Date.now();
-  const expiry = new Date(expiresAt).getTime();
-  const msRemaining = expiry - now;
-  const daysRemaining = Math.max(0, Math.ceil(msRemaining / 86400000));
-
+/**
+ * Legacy compatibility only.
+ * Older route logic still asks for "field test" status, but production builds
+ * should never expire because of a 14-day test window.
+ */
+async function getFieldTestStatus(_db, _deviceId) {
   return {
-    started: true,
-    startedAt,
-    expiresAt,
-    expired: msRemaining <= 0,
-    daysRemaining,
+    started: false,
+    startedAt: null,
+    expiresAt: null,
+    expired: false,
+    daysRemaining: 36500,
   };
 }
 
-async function ensureFieldTestStarted(db, deviceId) {
-  const ref = db.collection("fieldTest").doc(deviceId);
-
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const data = snap.exists ? snap.data() : {};
-
-    if (data?.startedAt && data?.expiresAt) {
-      const now = Date.now();
-      const expiry = new Date(data.expiresAt).getTime();
-      const msRemaining = expiry - now;
-
-      return {
-        startedAt: data.startedAt,
-        expiresAt: data.expiresAt,
-        expired: msRemaining <= 0,
-        daysRemaining: Math.max(0, Math.ceil(msRemaining / 86400000)),
-      };
-    }
-
-    const startedAt = new Date().toISOString();
-    const expiresAt = addDaysIso(startedAt, FIELD_TEST_DURATION_DAYS);
-
-    await tx.set(
-      ref,
-      {
-        startedAt,
-        expiresAt,
-        updatedAt: startedAt,
-      },
-      { merge: true }
-    );
-
-    return {
-      startedAt,
-      expiresAt,
-      expired: false,
-      daysRemaining: FIELD_TEST_DURATION_DAYS,
-    };
-  });
+/**
+ * Legacy compatibility only.
+ * Do not create or enforce any field-test expiration records in production.
+ */
+async function ensureFieldTestStarted(_db, _deviceId) {
+  return {
+    startedAt: null,
+    expiresAt: null,
+    expired: false,
+    daysRemaining: 36500,
+  };
 }
 
 function requestCostForMode(mode) {
@@ -257,24 +206,33 @@ function requestCostForMode(mode) {
   return 3;
 }
 
-async function getTestCreditStatus(db, deviceId) {
-  const snap = await db.collection("testCredits").doc(deviceId).get();
+async function getCreditStatus(db, deviceId) {
+  const ref = db.collection("credits").doc(deviceId);
+  const snap = await ref.get();
   const data = snap.exists ? snap.data() : {};
+
   const used = Number(data?.used || 0);
-  const cap = Number(data?.cap || TEST_CREDITS_CAP);
+  const cap = Number(data?.cap || FREE_STARTER_CREDITS);
   const remaining = Math.max(0, cap - used);
 
-  return { used, cap, remaining };
+  return {
+    used,
+    cap,
+    remaining,
+    plan: data?.plan || "free",
+  };
 }
 
-async function consumeTestCredits(db, deviceId, cost) {
-  const ref = db.collection("testCredits").doc(deviceId);
+async function consumeCredits(db, deviceId, cost) {
+  const ref = db.collection("credits").doc(deviceId);
 
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const data = snap.exists ? snap.data() : {};
+
+    const nowIso = new Date().toISOString();
     const used = Number(data?.used || 0);
-    const cap = Number(data?.cap || TEST_CREDITS_CAP);
+    const cap = Number(data?.cap || FREE_STARTER_CREDITS);
     const remaining = Math.max(0, cap - used);
 
     if (cost > remaining) {
@@ -283,6 +241,7 @@ async function consumeTestCredits(db, deviceId, cost) {
         used,
         cap,
         remaining,
+        plan: data?.plan || "free",
       };
     }
 
@@ -294,7 +253,9 @@ async function consumeTestCredits(db, deviceId, cost) {
       {
         used: nextUsed,
         cap,
-        updatedAt: new Date().toISOString(),
+        plan: data?.plan || "free",
+        createdAt: data?.createdAt || nowIso,
+        updatedAt: nowIso,
       },
       { merge: true }
     );
@@ -304,10 +265,25 @@ async function consumeTestCredits(db, deviceId, cost) {
       used: nextUsed,
       cap,
       remaining: nextRemaining,
+      plan: data?.plan || "free",
     };
   });
 }
 
+/**
+ * Temporary compatibility wrappers.
+ * The route code still calls these names, but they now use production credits.
+ * We will rename the route responses from testCredits -> credits in the next pass.
+ */
+async function getTestCreditStatus(db, deviceId) {
+  return getCreditStatus(db, deviceId);
+}
+
+async function consumeTestCredits(db, deviceId, cost) {
+  return consumeCredits(db, deviceId, cost);
+}
+
+   
 /* =========================================================
    MODIFIED UTILITIES & HEURISTICS
    ========================================================= */
@@ -1253,7 +1229,7 @@ if (!safetyCheck.ok) {
       return res.status(403).json({
         ok: false,
         error: "FIELD_TEST_EXPIRED",
-        message: "This field test build has expired.",
+        message: "This app version is no longer available. Please update SarcasmAI.",
         fieldTest: {
           startedAt: fieldTestStatus.startedAt,
           expiresAt: fieldTestStatus.expiresAt,
@@ -1266,8 +1242,8 @@ if (!safetyCheck.ok) {
     if (testCredits.remaining < EMOJI_IMAGE_CREDIT_COST) {
       return res.status(403).json({
         ok: false,
-        error: "TEST_CREDITS_EXHAUSTED",
-        message: "You’ve reached the limit for this test version.",
+        error: "CREDITS_EXHAUSTED",
+        message: "You have used your free starter credits. Upgrade to Pro to keep generating.",
         testCredits: {
           used: testCredits.used,
           cap: testCredits.cap,
@@ -1288,8 +1264,8 @@ if (!safetyCheck.ok) {
     if (!creditResult.ok) {
       return res.status(403).json({
         ok: false,
-        error: "TEST_CREDITS_EXHAUSTED",
-        message: "You’ve reached the limit for this test version.",
+        error: "CREDITS_EXHAUSTED",
+        message: "You have used your free starter credits. Upgrade to Pro to keep generating.",
         testCredits: {
           used: creditResult.used,
           cap: creditResult.cap,
@@ -1304,7 +1280,7 @@ if (!safetyCheck.ok) {
       return res.status(403).json({
         ok: false,
         error: "FIELD_TEST_EXPIRED",
-        message: "This field test build has expired.",
+        message: "This app version is no longer available. Please update SarcasmAI.",
         fieldTest: {
           startedAt: fieldTestResult.startedAt,
           expiresAt: fieldTestResult.expiresAt,
@@ -1389,7 +1365,7 @@ const mode =
       return res.status(403).json({
         ok: false,
         error: "FIELD_TEST_EXPIRED",
-        message: "This field test build has expired.",
+        message: "This app version is no longer available. Please update SarcasmAI.",
         fieldTest: {
           startedAt: fieldTestStatus.startedAt,
           expiresAt: fieldTestStatus.expiresAt,
@@ -1402,8 +1378,8 @@ const mode =
     if (testCredits.remaining < requestCost) {
       return res.status(403).json({
         ok: false,
-        error: "TEST_CREDITS_EXHAUSTED",
-        message: "You’ve reached the limit for this test version.",
+        error: "CREDITS_EXHAUSTED",
+        message: "You have used your free starter credits. Upgrade to Pro to keep generating.",
         testCredits: {
           used: testCredits.used,
           cap: testCredits.cap,
@@ -1494,8 +1470,8 @@ const mode =
       if (!creditResult.ok) {
         return res.status(403).json({
           ok: false,
-          error: "TEST_CREDITS_EXHAUSTED",
-          message: "You’ve reached the limit for this test version.",
+          error: "CREDITS_EXHAUSTED",
+          message: "You have used your free starter credits. Upgrade to Pro to keep generating.",
           testCredits: {
             used: creditResult.used,
             cap: creditResult.cap,
@@ -1510,7 +1486,7 @@ const mode =
         return res.status(403).json({
           ok: false,
           error: "FIELD_TEST_EXPIRED",
-          message: "This field test build has expired.",
+          message: "This app version is no longer available. Please update SarcasmAI.",
           fieldTest: {
             startedAt: fieldTestResult.startedAt,
             expiresAt: fieldTestResult.expiresAt,
@@ -1601,8 +1577,8 @@ if (mode !== "emoji" && options.length < safeCount) {
     if (!creditResult.ok) {
       return res.status(403).json({
         ok: false,
-        error: "TEST_CREDITS_EXHAUSTED",
-        message: "You’ve reached the limit for this test version.",
+        error: "CREDITS_EXHAUSTED",
+        message: "You have used your free starter credits. Upgrade to Pro to keep generating.",
         testCredits: {
           used: creditResult.used,
           cap: creditResult.cap,
@@ -1617,7 +1593,7 @@ if (mode !== "emoji" && options.length < safeCount) {
       return res.status(403).json({
         ok: false,
         error: "FIELD_TEST_EXPIRED",
-        message: "This field test build has expired.",
+        message: "This app version is no longer available. Please update SarcasmAI.",
         fieldTest: {
           startedAt: fieldTestResult.startedAt,
           expiresAt: fieldTestResult.expiresAt,
